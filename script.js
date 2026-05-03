@@ -1,143 +1,152 @@
-// ================= BASIC =================
+//THREE SETUP
 const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x050a0f);
+scene.fog = new THREE.Fog(0x050a0f, 600, 1800);
 
 const camera = new THREE.PerspectiveCamera(
-  75, window.innerWidth / window.innerHeight, 0.1, 3000
+  70, window.innerWidth / window.innerHeight, 0.5, 3000
 );
-camera.position.set(0, 0, 400);
+camera.position.set(0, 0, 350);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
-document.body.appendChild(renderer.domElement);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+renderer.domElement.id = 'three-canvas';
+document.body.prepend(renderer.domElement);
 
-scene.add(new THREE.AxesHelper(100));
+// subtle grid floor
+const gridHelper = new THREE.GridHelper(1600, 40, 0x0a2030, 0x0a2030);
+scene.add(gridHelper);
 
-// ================= UI =================
+// ambient + directional
+const ambientLight = new THREE.AmbientLight(0x112233, 2);
+scene.add(ambientLight);
+const dirLight = new THREE.DirectionalLight(0x00c8ff, 1.2);
+dirLight.position.set(200, 400, 200);
+scene.add(dirLight);
+
+//STATE
 let useOctree = true;
-let showTree = false;
+let showTree  = false;
+let paused    = false;
+let COUNT     = 50000;
+let speedMult = 1.0;
+let camSpeed  = 3;
+let maxDepth  = 5;
 
-const btnMode = document.createElement("button");
-btnMode.innerText = "Mode: Normal";
-btnMode.style.cssText = "position:absolute;top:10px;left:10px;padding:10px;";
-document.body.appendChild(btnMode);
+//INSTANCED MESH 
+const MAX_INSTANCES = 200000;
 
-btnMode.onclick = () => {
-  useOctree = !useOctree;
-  btnMode.innerText = useOctree ? "Mode: Normal" : "Mode: Octree";
-};
-
-const btnTree = document.createElement("button");
-btnTree.innerText = "Show Octree: OFF";
-btnTree.style.cssText = "position:absolute;top:50px;left:10px;padding:10px;";
-document.body.appendChild(btnTree);
-
-btnTree.onclick = () => {
-  showTree = !showTree;
-  btnTree.innerText = showTree ? "Show Octree: ON" : "Show Octree: OFF";
-};
-
-const stats = document.createElement("div");
-stats.style.cssText = "position:absolute;top:100px;left:10px;color:white;";
-document.body.appendChild(stats);
-
-// ================= GRAPH =================
-const ctx = document.getElementById("chart").getContext("2d");
-
-const chart = new Chart(ctx, {
-  type: "line",
-  data: {
-    labels: [],
-    datasets: [
-      { label: "Checked", data: [], yAxisID: "y" },
-      { label: "Rendered", data: [], yAxisID: "y" },
-      { label: "FPS", data: [], yAxisID: "y1" }
-    ]
-  },
-  options: {
-    animation: false,
-    responsive: false,
-    scales: {
-      y: { position: "left", beginAtZero: true },
-      y1: { position: "right", beginAtZero: true, grid: { drawOnChartArea: false } }
-    }
-  }
+const geometry = new THREE.BoxGeometry(1, 1, 1);
+const material = new THREE.MeshBasicMaterial({
+  vertexColors: true,
 });
 
-// ================= INSTANCED =================
-const COUNT = 100000; 
-
-const geometry = new THREE.BoxGeometry();
-const material = new THREE.MeshBasicMaterial({ color: 0x44aa88 });
-
-const instancedMesh = new THREE.InstancedMesh(geometry, material, COUNT);
+// Use MeshPhong with per-instance color
+const instancedMesh = new THREE.InstancedMesh(geometry, material, MAX_INSTANCES);
+instancedMesh.instanceMatrix.setUsage(35048); // DYNAMIC_DRAW
+instancedMesh.count = COUNT;
 scene.add(instancedMesh);
 
 const dummy = new THREE.Object3D();
-const positions = [];
-const velocities = [];
-const boxes = [];
 
-for (let i = 0; i < COUNT; i++) {
-  const pos = new THREE.Vector3(
-    (Math.random() - 0.5) * 800,
-    (Math.random() - 0.5) * 800,
-    (Math.random() - 0.5) * 800
+const allPositions  = new Array(MAX_INSTANCES);
+const allVelocities = new Array(MAX_INSTANCES);
+const allBoxes      = new Array(MAX_INSTANCES);
+const allColors     = new Array(MAX_INSTANCES);
+
+// Pre-allocate all objects
+const RANGE = 800;
+for (let i = 0; i < MAX_INSTANCES; i++) {
+  allPositions[i] = new THREE.Vector3(
+    (Math.random() - 0.5) * RANGE,
+    (Math.random() - 0.5) * RANGE,
+    (Math.random() - 0.5) * RANGE
   );
-
-  const vel = new THREE.Vector3(
+  allVelocities[i] = new THREE.Vector3(
     (Math.random() - 0.5) * 0.5,
     (Math.random() - 0.5) * 0.5,
     (Math.random() - 0.5) * 0.5
   );
+  allBoxes[i] = new THREE.Box3();
 
-  positions.push(pos);
-  velocities.push(vel);
-
-  const box = new THREE.Box3().setFromCenterAndSize(pos, new THREE.Vector3(1,1,1));
-  boxes.push(box);
-
-  dummy.position.set(9999,9999,9999);
-  dummy.updateMatrix();
-  instancedMesh.setMatrixAt(i, dummy.matrix);
+  // Color by distance from origin (red→orange gradient)
+  allColors[i] = new THREE.Color(0, 0.5, 1); // bright blue
 }
 
+// Init instance colors
+for (let i = 0; i < MAX_INSTANCES; i++) {
+  instancedMesh.setColorAt(i, allColors[i]);
+}
+instancedMesh.instanceColor.needsUpdate = true;
+
+// Hide all initially
+const HIDDEN = new THREE.Matrix4().makeTranslation(99999, 99999, 99999);
+for (let i = 0; i < MAX_INSTANCES; i++) {
+  instancedMesh.setMatrixAt(i, HIDDEN);
+}
 instancedMesh.instanceMatrix.needsUpdate = true;
 
-// ================= OCTREE =================
-let helpers = [];
+//BOUNDING BOX
+const HALF_SIZE  = new THREE.Vector3(0.5, 0.5, 0.5);
+function updateBox(i) {
+  allBoxes[i].setFromCenterAndSize(allPositions[i], HALF_SIZE.clone().multiplyScalar(2));
+}
+for (let i = 0; i < MAX_INSTANCES; i++) updateBox(i);
+
+//OCTREE 
+let octreeHelpers = [];
+
+// Depth palette (matches depth-legend in HTML)
+const DEPTH_COLORS = [
+  '#00c8ff', // 0 – cyan
+  '#39ff14', // 1 – green
+  '#ffdd00', // 2 – yellow
+  '#ff6b35', // 3 – orange
+  '#ff1f71', // 4 – pink
+  '#b44bff', // 5 – violet
+  '#ffffff', // 6+
+];
+
+// Build legend
+const legendEl = document.getElementById('depth-legend');
+DEPTH_COLORS.slice(0, 6).forEach((c, i) => {
+  const d = document.createElement('div');
+  d.className = 'depth-swatch';
+  d.innerHTML = `<div class="depth-dot" style="background:${c};border-radius:2px;"></div> L${i}`;
+  legendEl.appendChild(d);
+});
 
 class Octree {
-  constructor(boundary, capacity = 20, depth = 0) {
+  constructor(boundary, capacity = 16, depth = 0) {
     this.boundary = boundary;
     this.capacity = capacity;
-    this.depth = depth;
-    this.maxDepth = 5;
-    this.objects = [];
-    this.divided = false;
+    this.depth    = depth;
+    this.objects  = [];
+    this.divided  = false;
+    this.children = null;
   }
 
   subdivide() {
-    if (this.depth >= this.maxDepth) return;
-
-    const size = new THREE.Vector3();
-    this.boundary.getSize(size);
-    const half = size.clone().multiplyScalar(0.5);
+    if (this.depth >= maxDepth) return;
 
     const center = new THREE.Vector3();
     this.boundary.getCenter(center);
+    const size   = new THREE.Vector3();
+    this.boundary.getSize(size);
+    const half   = size.clone().multiplyScalar(0.5);
+    const qtr    = half.clone().multiplyScalar(0.5);
 
     this.children = [];
-
-    for (let x=-1;x<=1;x+=2)
-      for (let y=-1;y<=1;y+=2)
-        for (let z=-1;z<=1;z+=2) {
-          const c = new THREE.Vector3(
-            center.x + x*half.x/2,
-            center.y + y*half.y/2,
-            center.z + z*half.z/2
+    for (let x = -1; x <= 1; x += 2)
+      for (let y = -1; y <= 1; y += 2)
+        for (let z = -1; z <= 1; z += 2) {
+        const cc = new THREE.Vector3(
+            center.x + x * qtr.x,
+            center.y + y * qtr.y,
+            center.z + z * qtr.z
           );
-
-          const b = new THREE.Box3().setFromCenterAndSize(c, half);
+          const b = new THREE.Box3().setFromCenterAndSize(cc, half);
           this.children.push(new Octree(b, this.capacity, this.depth + 1));
         }
 
@@ -145,9 +154,9 @@ class Octree {
   }
 
   insert(i) {
-    if (!this.boundary.containsPoint(positions[i])) return false;
+    if (!this.boundary.containsPoint(allPositions[i])) return false;
 
-    if (this.objects.length < this.capacity) {
+    if (this.objects.length < this.capacity || this.depth >= maxDepth) {
       this.objects.push(i);
       return true;
     }
@@ -155,480 +164,435 @@ class Octree {
     if (!this.divided) this.subdivide();
 
     if (this.divided) {
-      for (let child of this.children) {
+      for (const child of this.children) {
         if (child.insert(i)) return true;
       }
     }
 
-    return false;
+    // Overflow – store here anyway
+    this.objects.push(i);
+    return true;
   }
 
-  query(frustum, found=[]) {
+  // Frustum query with early-exit
+  query(frustum, found = []) {
     if (!frustum.intersectsBox(this.boundary)) return found;
 
-    for (let i of this.objects) {
-      if (frustum.intersectsBox(boxes[i])) found.push(i);
+    for (const i of this.objects) {
+      if (frustum.intersectsBox(allBoxes[i])) found.push(i);
     }
 
     if (this.divided) {
-      for (let child of this.children) {
-        if (frustum.intersectsBox(child.boundary)) {
-          child.query(frustum, found);
-        }
+      for (const child of this.children) {
+        child.query(frustum, found);
       }
     }
 
     return found;
   }
 
-  visualize(level = 0) {
-    if (level > 2) return; // limit depth for performance
-
-    const helper = new THREE.Box3Helper(this.boundary, 0xff0000);
-    scene.add(helper);
-    helpers.push(helper);
-
-    if (this.divided) {
-      this.children.forEach(child => child.visualize(level + 1));
+  // Visualize – leaf nodes only, colored by depth
+  visualize() {
+    if (!this.divided) {
+      const col = DEPTH_COLORS[Math.min(this.depth, DEPTH_COLORS.length - 1)];
+      const helper = new THREE.Box3Helper(this.boundary, new THREE.Color(col));
+      scene.add(helper);
+      octreeHelpers.push(helper);
+      return;
     }
+    for (const child of this.children) child.visualize();
   }
 }
 
-const boundary = new THREE.Box3(
-  new THREE.Vector3(-800,-800,-800),
-  new THREE.Vector3(800,800,800)
+const treeBounds = new THREE.Box3(
+  new THREE.Vector3(-RANGE, -RANGE, -RANGE),
+  new THREE.Vector3( RANGE,  RANGE,  RANGE)
 );
 
-// ================= FRUSTUM =================
+let octree = null;
+
+function rebuildOctree() {
+  octree = new Octree(treeBounds, 16);
+  for (let i = 0; i < COUNT; i++) octree.insert(i);
+}
+
+//FRUSTUM 
 const frustum = new THREE.Frustum();
-const matrix = new THREE.Matrix4();
+const projMatrix = new THREE.Matrix4();
 
 function updateFrustum() {
   camera.updateMatrixWorld();
-  matrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-  frustum.setFromProjectionMatrix(matrix);
+  projMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  frustum.setFromProjectionMatrix(projMatrix);
 }
 
-// ================= CONTROLS =================
-let moveF=false, moveB=false, moveL=false, moveR=false;
-let yaw=0, pitch=0;
+//CONTROLS 
+let moveF = false, moveB = false, moveL = false, moveR = false, moveUp = false, moveDn = false;
+let yaw = 0, pitch = 0;
 
-document.body.onclick = ()=>document.body.requestPointerLock();
+renderer.domElement.addEventListener('click', () => {
+  renderer.domElement.requestPointerLock();
+});
 
-document.onmousemove = e=>{
-  if(document.pointerLockElement===document.body){
-    yaw -= e.movementX*0.002;
-    pitch -= e.movementY*0.002;
-    pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, pitch));
-    camera.rotation.set(pitch,yaw,0);
+document.addEventListener('pointerlockchange', () => {
+  if (document.pointerLockElement === renderer.domElement) {
+    document.body.classList.add('locked');
+  } else {
+    document.body.classList.remove('locked');
   }
-};
+});
 
-document.onkeydown=e=>{
-  if(e.key==="w")moveF=true;
-  if(e.key==="s")moveB=true;
-  if(e.key==="a")moveL=true;
-  if(e.key==="d")moveR=true;
-};
+document.addEventListener('mousemove', e => {
+  if (document.pointerLockElement === renderer.domElement) {
+    yaw   -= e.movementX * 0.002;
+    pitch -= e.movementY * 0.002;
+    pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch));
+  }
+});
 
-document.onkeyup=e=>{
-  if(e.key==="w")moveF=false;
-  if(e.key==="s")moveB=false;
-  if(e.key==="a")moveL=false;
-  if(e.key==="d")moveR=false;
-};
+document.addEventListener('keydown', e => {
+  switch (e.key.toLowerCase()) {
+    case 'w': moveF  = true; break;
+    case 's': moveB  = true; break;
+    case 'a': moveL  = true; break;
+    case 'd': moveR  = true; break;
+    case 'q': moveUp = true; break;
+    case 'e': moveDn = true; break;
+  }
+});
+document.addEventListener('keyup', e => {
+  switch (e.key.toLowerCase()) {
+    case 'w': moveF  = false; break;
+    case 's': moveB  = false; break;
+    case 'a': moveL  = false; break;
+    case 'd': moveR  = false; break;
+    case 'q': moveUp = false; break;
+    case 'e': moveDn = false; break;
+  }
+});
 
-// ================= FPS =================
-let last = performance.now(), fps=0;
+//UI ELEMENTS 
+const btnOctree   = document.getElementById('btn-octree');
+const btnNormal   = document.getElementById('btn-normal');
+const btnTree     = document.getElementById('btn-tree');
+const btnPause    = document.getElementById('btn-pause');
+const modePill    = document.getElementById('mode-pill');
 
-// ================= LOOP =================
-function animate(){
+// Mode toggle
+btnOctree.addEventListener('click', () => {
+  useOctree = true;
+  btnOctree.classList.add('active');
+  btnNormal.classList.remove('active');
+  modePill.textContent = 'OCTREE CULLING';
+  modePill.className = 'octree';
+});
+
+btnNormal.addEventListener('click', () => {
+  useOctree = false;
+  btnNormal.classList.add('active');
+  btnOctree.classList.remove('active');
+  modePill.textContent = 'BRUTE FORCE';
+  modePill.className = 'normal';
+});
+
+// Show tree
+btnTree.addEventListener('click', () => {
+  showTree = !showTree;
+  btnTree.classList.toggle('active', showTree);
+});
+
+// Pause
+btnPause.addEventListener('click', () => {
+  paused = !paused;
+  btnPause.textContent  = paused ? 'Resume' : 'Pause';
+  btnPause.classList.toggle('active', paused);
+});
+
+// Sliders
+const slCount    = document.getElementById('sl-count');
+const slSpeed    = document.getElementById('sl-speed');
+const slCamSpeed = document.getElementById('sl-camspeed');
+const slDepth    = document.getElementById('sl-depth');
+
+const lblCount    = document.getElementById('lbl-count');
+const lblSpeed    = document.getElementById('lbl-speed');
+const lblCamSpeed = document.getElementById('lbl-camspeed');
+const lblDepth    = document.getElementById('lbl-depth');
+
+slCount.addEventListener('input', () => {
+  COUNT = parseInt(slCount.value);
+  lblCount.textContent = COUNT.toLocaleString();
+  instancedMesh.count = COUNT;
+  // Hide newly-deactivated or re-init new instances
+  for (let i = 0; i < MAX_INSTANCES; i++) {
+    instancedMesh.setMatrixAt(i, HIDDEN);
+  }
+  instancedMesh.instanceMatrix.needsUpdate = true;
+  rebuildOctree();
+});
+
+slSpeed.addEventListener('input', () => {
+  speedMult = parseFloat(slSpeed.value);
+  lblSpeed.textContent = speedMult.toFixed(1) + '×';
+});
+
+slCamSpeed.addEventListener('input', () => {
+  camSpeed = parseFloat(slCamSpeed.value);
+  lblCamSpeed.textContent = camSpeed.toFixed(1);
+});
+
+slDepth.addEventListener('input', () => {
+  maxDepth = parseInt(slDepth.value);
+  lblDepth.textContent = maxDepth;
+  rebuildOctree();
+});
+
+//CHART 
+const chartCanvas = document.getElementById('chart');
+const chartCtx    = chartCanvas.getContext('2d');
+
+const chart = new Chart(chartCtx, {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [
+      {
+        label: 'Checked',
+        data: [],
+        borderColor: '#ff6b35',
+        backgroundColor: 'rgba(255,107,53,0.08)',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        fill: true,
+        tension: 0.3,
+        yAxisID: 'y'
+      },
+      {
+        label: 'Rendered',
+        data: [],
+        borderColor: '#00c8ff',
+        backgroundColor: 'rgba(0,200,255,0.08)',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        fill: true,
+        tension: 0.3,
+        yAxisID: 'y'
+      },
+      {
+        label: 'FPS',
+        data: [],
+        borderColor: '#39ff14',
+        backgroundColor: 'transparent',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        tension: 0.3,
+        yAxisID: 'y1'
+      }
+    ]
+  },
+  options: {
+    animation: false,
+    responsive: false,
+    plugins: {
+      legend: {
+        labels: {
+          color: '#4a7080',
+          font: { family: "'Share Tech Mono', monospace", size: 9 },
+          boxWidth: 10
+        }
+      }
+    },
+    scales: {
+      x: {
+        display: false
+      },
+      y: {
+        position: 'left',
+        beginAtZero: true,
+        ticks: {
+          color: '#4a7080',
+          font: { family: "'Share Tech Mono', monospace", size: 9 },
+          maxTicksLimit: 5
+        },
+        grid: { color: 'rgba(255,255,255,0.04)' }
+      },
+      y1: {
+        position: 'right',
+        beginAtZero: true,
+        ticks: {
+          color: '#39ff14',
+          font: { family: "'Share Tech Mono', monospace", size: 9 },
+          maxTicksLimit: 5
+        },
+        grid: { drawOnChartArea: false }
+      }
+    }
+  }
+});
+
+//STATS ELEMENTS
+const sFPS      = document.getElementById('s-fps');
+const sCount    = document.getElementById('s-count');
+const sMs       = document.getElementById('s-ms');
+const sChecked  = document.getElementById('s-checked');
+const sRendered = document.getElementById('s-rendered');
+const barChecked  = document.getElementById('bar-checked');
+const barRendered = document.getElementById('bar-rendered');
+const effBadge    = document.getElementById('efficiency-badge');
+
+// FPS rolling average
+const FPS_WINDOW = 30;
+const fpsBuffer = new Float32Array(FPS_WINDOW);
+let fpsPtr = 0;
+
+//INITIAL BUILD 
+rebuildOctree();
+
+//MAIN LOOP 
+let lastTime = performance.now();
+let frame    = 0;
+
+function animate() {
   requestAnimationFrame(animate);
 
-  const now = performance.now();
-  fps = 1000/(now-last);
-  last = now;
+  const now    = performance.now();
+  const dt     = now - lastTime;
+  lastTime     = now;
+
+  // FPS smooth
+  fpsBuffer[fpsPtr % FPS_WINDOW] = 1000 / dt;
+  fpsPtr++;
+  let fpsSum = 0;
+  for (let i = 0; i < FPS_WINDOW; i++) fpsSum += fpsBuffer[i];
+  const fps = fpsSum / FPS_WINDOW;
 
   updateFrustum();
 
-  // camera movement
+  //Camera movement
   const dir = new THREE.Vector3();
-  if(moveF)dir.z-=1;
-  if(moveB)dir.z+=1;
-  if(moveL)dir.x-=1;
-  if(moveR)dir.x+=1;
-  dir.normalize().applyEuler(camera.rotation);
-  camera.position.add(dir.multiplyScalar(3));
+  if (moveF)  dir.z -= 1;
+  if (moveB)  dir.z += 1;
+  if (moveL)  dir.x -= 1;
+  if (moveR)  dir.x += 1;
+  if (dir.lengthSq() > 0) dir.normalize();
+  dir.applyEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
+  if (moveUp) dir.y += 1;
+  if (moveDn) dir.y -= 1;
+  camera.position.addScaledVector(dir, camSpeed);
+  camera.rotation.set(pitch, yaw, 0, 'YXZ');
 
-  // move objects
-  for(let i=0;i<COUNT;i++){
-    positions[i].add(velocities[i]);
-    if(positions[i].length()>400) velocities[i].multiplyScalar(-1);
-    boxes[i].setFromCenterAndSize(positions[i], new THREE.Vector3(1,1,1));
+  //Move objects 
+  if (!paused) {
+    for (let i = 0; i < COUNT; i++) {
+      allPositions[i].addScaledVector(allVelocities[i], speedMult);
+      // bounce off sphere boundary
+      const d = allPositions[i].length();
+      if (d > RANGE * 0.9) {
+        allPositions[i].normalize().multiplyScalar(RANGE / 2);
+        allVelocities[i].reflect(allPositions[i].clone().normalize()).multiplyScalar(-1);
+      }
+      updateBox(i);
+    }
+
+    // Rebuild octree every frame (necessary since objects move)
+    rebuildOctree();
   }
 
-  // rebuild octree
-  const octree = new Octree(boundary);
-  for (let i = 0; i < COUNT; i++) octree.insert(i);
+  //Tree visualization 
+  octreeHelpers.forEach(h => scene.remove(h));
+  octreeHelpers = [];
+  if (showTree && octree) octree.visualize();
 
-  // clear previous visualization
-  helpers.forEach(h => scene.remove(h));
-  helpers = [];
+  // Culling
+  const frameStart = performance.now();
+  let checked  = 0;
+  let rendered = 0;
 
-  if (showTree) octree.visualize();
+  // Track which indices were rendered this frame
+  const visibleSet = new Uint8Array(COUNT); // 0 = hidden, 1 = visible
 
-  let checked=0, rendered=0;
-
-  if(useOctree){
-    const visible = octree.query(frustum);
-    checked = visible.length;
-
-    visible.forEach(i=>{
-      dummy.position.copy(positions[i]);
-      dummy.updateMatrix();
-      instancedMesh.setMatrixAt(i, dummy.matrix);
+  if (useOctree) {
+    const visible = octree.query(frustum, []);
+    checked  = visible.length;  // octree narrows search space
+    for (const i of visible) {
+      visibleSet[i] = 1;
       rendered++;
-    });
-
+    }
+// Also count total octree-checked (leaf objects examined)
+// For accurate "checked" in octree mode we use visible.length as approximation
   } else {
-    for(let i=0;i<COUNT;i++){
+// Brute force: check every object
+    for (let i = 0; i < COUNT; i++) {
       checked++;
-      if(frustum.intersectsBox(boxes[i])){
-        dummy.position.copy(positions[i]);
-        dummy.updateMatrix();
-        instancedMesh.setMatrixAt(i, dummy.matrix);
+      if (frustum.intersectsBox(allBoxes[i])) {
+        visibleSet[i] = 1;
         rendered++;
       }
     }
   }
 
-  instancedMesh.instanceMatrix.needsUpdate = true;
-
-  // graph update
-  if(chart.data.labels.length>50){
-    chart.data.labels.shift();
-    chart.data.datasets.forEach(d=>d.data.shift());
+  // Update instance matrices
+  // Show visible, hide invisible
+  for (let i = 0; i < COUNT; i++) {
+    if (visibleSet[i]) {
+      dummy.position.copy(allPositions[i]);
+      dummy.rotation.set(frame * 0.005 + i, frame * 0.003 + i * 0.7, 0);
+      dummy.scale.setScalar(1);
+      dummy.updateMatrix();
+      instancedMesh.setMatrixAt(i, dummy.matrix);
+    } else {
+      instancedMesh.setMatrixAt(i, HIDDEN);
+    }
   }
 
-  chart.data.labels.push("");
-  chart.data.datasets[0].data.push(checked);
-  chart.data.datasets[1].data.push(rendered);
-  chart.data.datasets[2].data.push(fps);
-  chart.update();
+  instancedMesh.instanceMatrix.needsUpdate = true;
 
-  stats.innerHTML = `
-    FPS: ${fps.toFixed(2)} <br>
-    Mode: ${useOctree?"Octree":"Normal"} <br>
-    Checked: ${checked} <br>
-    Rendered: ${rendered}
-  `;
+  const frameMs = performance.now() - frameStart;
 
-  renderer.render(scene,camera);
+  // Stats UI
+  sFPS.textContent      = fps.toFixed(1);
+  sCount.textContent    = COUNT.toLocaleString();
+  sMs.textContent       = frameMs.toFixed(1) + 'ms';
+  sChecked.textContent  = checked.toLocaleString();
+  sRendered.textContent = rendered.toLocaleString();
+
+  const checkedRatio  = COUNT > 0 ? (checked  / COUNT) * 100 : 0;
+  const renderedRatio = COUNT > 0 ? (rendered / COUNT) * 100 : 0;
+  barChecked.style.width  = Math.min(checkedRatio,  100) + '%';
+  barRendered.style.width = Math.min(renderedRatio, 100) + '%';
+
+  const efficiency = rendered > 0 && COUNT > 0
+    ? ((1 - rendered / COUNT) * 100)
+    : 0;
+  effBadge.textContent = efficiency.toFixed(1) + '%';
+  effBadge.style.color = efficiency > 70 ? 'var(--accent3)'
+    : efficiency > 40 ? 'var(--accent)'
+    : 'var(--accent2)';
+
+  //Chart
+  if (frame % 2 === 0) { 
+    const MAX_LABELS = 60;
+    if (chart.data.labels.length >= MAX_LABELS) {
+      chart.data.labels.shift();
+      chart.data.datasets.forEach(d => d.data.shift());
+    }
+
+    chart.data.labels.push('');
+    chart.data.datasets[0].data.push(checked);
+    chart.data.datasets[1].data.push(rendered);
+    chart.data.datasets[2].data.push(fps);
+    chart.update('none');
+  }
+
+  renderer.render(scene, camera);
+  frame++;
 }
 
-animate();
-
-window.onresize=()=>{
-  camera.aspect=window.innerWidth/window.innerHeight;
+// RESIZE 
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth,window.innerHeight);
-};
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
 
-
-// // ================= BASIC =================
-// const scene = new THREE.Scene();
-
-// const camera = new THREE.PerspectiveCamera(
-//   75, window.innerWidth / window.innerHeight, 0.1, 3000
-// );
-// camera.position.set(0, 0, 400);
-
-// const renderer = new THREE.WebGLRenderer({ antialias: true });
-// renderer.setSize(window.innerWidth, window.innerHeight);
-// document.body.appendChild(renderer.domElement);
-
-// scene.add(new THREE.AxesHelper(100));
-
-// // ================= UI =================
-// let useOctree = true;
-// let showTree = false;
-
-// const btnMode = document.createElement("button");
-// btnMode.innerText = "Mode: Octree";
-// btnMode.style.cssText = "position:absolute;top:10px;left:10px;padding:10px;";
-// document.body.appendChild(btnMode);
-
-// btnMode.onclick = () => {
-//   useOctree = !useOctree;
-//   btnMode.innerText = useOctree ? "Mode: Octree" : "Mode: Normal";
-// };
-
-// const btnTree = document.createElement("button");
-// btnTree.innerText = "Show Octree: OFF";
-// btnTree.style.cssText = "position:absolute;top:50px;left:10px;padding:10px;";
-// document.body.appendChild(btnTree);
-
-// btnTree.onclick = () => {
-//   showTree = !showTree;
-//   btnTree.innerText = showTree ? "Show Octree: ON" : "Show Octree: OFF";
-// };
-
-// const stats = document.createElement("div");
-// stats.style.cssText = "position:absolute;top:100px;left:10px;color:white;";
-// document.body.appendChild(stats);
-
-// // ================= OBJECTS =================
-// const COUNT = 10000;
-
-// const geometry = new THREE.BoxGeometry();
-// const material = new THREE.MeshBasicMaterial({ color: 0x44aa88 });
-
-// const instancedMesh = new THREE.InstancedMesh(geometry, material, COUNT);
-// scene.add(instancedMesh);
-
-// const dummy = new THREE.Object3D();
-
-// const positions = [];
-// const velocities = [];
-// const boxes = [];
-
-// for (let i = 0; i < COUNT; i++) {
-//   const pos = new THREE.Vector3(
-//     (Math.random() - 0.5) * 800,
-//     (Math.random() - 0.5) * 800,
-//     (Math.random() - 0.5) * 800
-//   );
-
-//   const vel = new THREE.Vector3(
-//     (Math.random() - 0.5) * 0.5,
-//     (Math.random() - 0.5) * 0.5,
-//     (Math.random() - 0.5) * 0.5
-//   );
-
-//   positions.push(pos);
-//   velocities.push(vel);
-
-//   boxes.push(new THREE.Box3().setFromCenterAndSize(pos, new THREE.Vector3(1,1,1)));
-
-//   dummy.position.set(9999,9999,9999);
-//   dummy.updateMatrix();
-//   instancedMesh.setMatrixAt(i, dummy.matrix);
-// }
-
-// instancedMesh.instanceMatrix.needsUpdate = true;
-
-// // ================= OCTREE =================
-// let helpers = [];
-
-// class Octree {
-//   constructor(boundary, capacity = 8, depth = 0) {
-//     this.boundary = boundary;
-//     this.capacity = capacity;
-//     this.depth = depth;
-//     this.maxDepth = 7;
-//     this.objects = [];
-//     this.divided = false;
-//   }
-
-//   subdivide() {
-//     if (this.depth >= this.maxDepth) return;
-
-//     const size = new THREE.Vector3();
-//     this.boundary.getSize(size);
-//     const half = size.clone().multiplyScalar(0.5);
-
-//     const center = new THREE.Vector3();
-//     this.boundary.getCenter(center);
-
-//     this.children = [];
-
-//     for (let x=-1;x<=1;x+=2)
-//       for (let y=-1;y<=1;y+=2)
-//         for (let z=-1;z<=1;z+=2) {
-
-//           const c = new THREE.Vector3(
-//             center.x + x*half.x/2,
-//             center.y + y*half.y/2,
-//             center.z + z*half.z/2
-//           );
-
-//           const b = new THREE.Box3().setFromCenterAndSize(c, half);
-//           this.children.push(new Octree(b, this.capacity, this.depth + 1));
-//         }
-
-//     this.divided = true;
-//   }
-
-//   insert(i) {
-//     if (!this.boundary.containsPoint(positions[i])) return false;
-
-//     if (this.objects.length < this.capacity || this.depth >= this.maxDepth) {
-//       this.objects.push(i);
-//       return true;
-//     }
-
-//     if (!this.divided) this.subdivide();
-
-//     for (let child of this.children) {
-//       if (child.insert(i)) return true;
-//     }
-
-//     return false;
-//   }
-
-//   query(frustum, found=[]) {
-//     if (!frustum.intersectsBox(this.boundary)) return found;
-
-//     for (let i of this.objects) {
-//       if (frustum.intersectsBox(boxes[i])) found.push(i);
-//     }
-
-//     if (this.divided) {
-//       for (let child of this.children) {
-//         child.query(frustum, found);
-//       }
-//     }
-
-//     return found;
-//   }
-
-//   // 🔥 LEAF NODE VISUALIZATION (BEST)
-//   visualize() {
-//     if (!this.divided) {
-//       const color = new THREE.Color().setHSL(this.depth / this.maxDepth, 1, 0.5);
-//       const helper = new THREE.Box3Helper(this.boundary, color);
-//       scene.add(helper);
-//       helpers.push(helper);
-//       return;
-//     }
-
-//     this.children.forEach(child => child.visualize());
-//   }
-// }
-
-// const boundary = new THREE.Box3(
-//   new THREE.Vector3(-800,-800,-800),
-//   new THREE.Vector3(800,800,800)
-// );
-
-// // ================= FRUSTUM =================
-// const frustum = new THREE.Frustum();
-// const matrix = new THREE.Matrix4();
-
-// function updateFrustum() {
-//   camera.updateMatrixWorld();
-//   matrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-//   frustum.setFromProjectionMatrix(matrix);
-// }
-
-// // ================= CONTROLS =================
-// let moveF=false, moveB=false, moveL=false, moveR=false;
-// let yaw=0, pitch=0;
-
-// document.body.onclick = ()=>document.body.requestPointerLock();
-
-// document.onmousemove = e=>{
-//   if(document.pointerLockElement===document.body){
-//     yaw -= e.movementX*0.002;
-//     pitch -= e.movementY*0.002;
-//     pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, pitch));
-//     camera.rotation.set(pitch,yaw,0);
-//   }
-// };
-
-// document.onkeydown=e=>{
-//   if(e.key==="w")moveF=true;
-//   if(e.key==="s")moveB=true;
-//   if(e.key==="a")moveL=true;
-//   if(e.key==="d")moveR=true;
-// };
-
-// document.onkeyup=e=>{
-//   if(e.key==="w")moveF=false;
-//   if(e.key==="s")moveB=false;
-//   if(e.key==="a")moveL=false;
-//   if(e.key==="d")moveR=false;
-// };
-
-// // ================= LOOP =================
-// let last = performance.now(), fps=0;
-
-// function animate(){
-//   requestAnimationFrame(animate);
-
-//   const now = performance.now();
-//   fps = 1000/(now-last);
-//   last = now;
-
-//   updateFrustum();
-
-//   // camera movement
-//   const dir = new THREE.Vector3();
-//   if(moveF)dir.z-=1;
-//   if(moveB)dir.z+=1;
-//   if(moveL)dir.x-=1;
-//   if(moveR)dir.x+=1;
-//   dir.normalize().applyEuler(camera.rotation);
-//   camera.position.add(dir.multiplyScalar(3));
-
-//   // move objects
-//   for(let i=0;i<COUNT;i++){
-//     positions[i].add(velocities[i]);
-//     if(positions[i].length()>400) velocities[i].multiplyScalar(-1);
-//     boxes[i].setFromCenterAndSize(positions[i], new THREE.Vector3(1,1,1));
-//   }
-
-//   // rebuild octree
-//   const octree = new Octree(boundary);
-//   for (let i = 0; i < COUNT; i++) octree.insert(i);
-
-//   // clear helpers
-//   helpers.forEach(h => scene.remove(h));
-//   helpers = [];
-
-//   if (showTree) octree.visualize();
-
-//   let checked=0, rendered=0;
-
-//   if(useOctree){
-//     const visible = octree.query(frustum);
-//     checked = visible.length;
-
-//     visible.forEach(i=>{
-//       dummy.position.copy(positions[i]);
-//       dummy.updateMatrix();
-//       instancedMesh.setMatrixAt(i, dummy.matrix);
-//       rendered++;
-//     });
-
-//   } else {
-//     for(let i=0;i<COUNT;i++){
-//       checked++;
-//       if(frustum.intersectsBox(boxes[i])){
-//         dummy.position.copy(positions[i]);
-//         dummy.updateMatrix();
-//         instancedMesh.setMatrixAt(i, dummy.matrix);
-//         rendered++;
-//       }
-//     }
-//   }
-
-//   instancedMesh.instanceMatrix.needsUpdate = true;
-
-//   stats.innerHTML = `
-//     FPS: ${fps.toFixed(2)} <br>
-//     Mode: ${useOctree?"Octree":"Normal"} <br>
-//     Checked: ${checked} <br>
-//     Rendered: ${rendered}
-//   `;
-
-//   renderer.render(scene,camera);
-// }
-
-// animate();
-
-// window.onresize=()=>{
-//   camera.aspect=window.innerWidth/window.innerHeight;
-//   camera.updateProjectionMatrix();
-//   renderer.setSize(window.innerWidth,window.innerHeight);
-// };
+animate();
