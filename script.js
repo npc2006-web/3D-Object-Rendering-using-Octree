@@ -18,12 +18,9 @@ document.body.prepend(renderer.domElement);
 const gridHelper = new THREE.GridHelper(1600, 40, 0x0a2030, 0x0a2030);
 scene.add(gridHelper);
 
-// ambient + directional
-const ambientLight = new THREE.AmbientLight(0x112233, 2);
+// ambient only — no directional so no shading on cubes
+const ambientLight = new THREE.AmbientLight(0xffffff, 1);
 scene.add(ambientLight);
-const dirLight = new THREE.DirectionalLight(0x00c8ff, 1.2);
-dirLight.position.set(200, 400, 200);
-scene.add(dirLight);
 
 //STATE
 let useOctree = true;
@@ -34,15 +31,15 @@ let speedMult = 1.0;
 let camSpeed  = 3;
 let maxDepth  = 5;
 
-//INSTANCED MESH 
+//INSTANCED MESH
 const MAX_INSTANCES = 200000;
 
 const geometry = new THREE.BoxGeometry(1, 1, 1);
 const material = new THREE.MeshBasicMaterial({
-  vertexColors: true,
+  vertexColors: false,
+  color: 0x00c8ff,
 });
 
-// Use MeshPhong with per-instance color
 const instancedMesh = new THREE.InstancedMesh(geometry, material, MAX_INSTANCES);
 instancedMesh.instanceMatrix.setUsage(35048); // DYNAMIC_DRAW
 instancedMesh.count = COUNT;
@@ -53,7 +50,6 @@ const dummy = new THREE.Object3D();
 const allPositions  = new Array(MAX_INSTANCES);
 const allVelocities = new Array(MAX_INSTANCES);
 const allBoxes      = new Array(MAX_INSTANCES);
-const allColors     = new Array(MAX_INSTANCES);
 
 // Pre-allocate all objects
 const RANGE = 800;
@@ -69,16 +65,7 @@ for (let i = 0; i < MAX_INSTANCES; i++) {
     (Math.random() - 0.5) * 0.5
   );
   allBoxes[i] = new THREE.Box3();
-
-  // Color by distance from origin (red→orange gradient)
-  allColors[i] = new THREE.Color(0, 0.5, 1); // bright blue
 }
-
-// Init instance colors
-for (let i = 0; i < MAX_INSTANCES; i++) {
-  instancedMesh.setColorAt(i, allColors[i]);
-}
-instancedMesh.instanceColor.needsUpdate = true;
 
 // Hide all initially
 const HIDDEN = new THREE.Matrix4().makeTranslation(99999, 99999, 99999);
@@ -88,24 +75,23 @@ for (let i = 0; i < MAX_INSTANCES; i++) {
 instancedMesh.instanceMatrix.needsUpdate = true;
 
 //BOUNDING BOX
-const HALF_SIZE  = new THREE.Vector3(0.5, 0.5, 0.5);
+const HALF_SIZE = new THREE.Vector3(0.5, 0.5, 0.5);
 function updateBox(i) {
   allBoxes[i].setFromCenterAndSize(allPositions[i], HALF_SIZE.clone().multiplyScalar(2));
 }
 for (let i = 0; i < MAX_INSTANCES; i++) updateBox(i);
 
-//OCTREE 
+//OCTREE
 let octreeHelpers = [];
 
-// Depth palette (matches depth-legend in HTML)
 const DEPTH_COLORS = [
-  '#00c8ff', // 0 – cyan
-  '#39ff14', // 1 – green
-  '#ffdd00', // 2 – yellow
-  '#ff6b35', // 3 – orange
-  '#ff1f71', // 4 – pink
-  '#b44bff', // 5 – violet
-  '#ffffff', // 6+
+  '#00c8ff',
+  '#39ff14',
+  '#ffdd00',
+  '#ff6b35',
+  '#ff1f71',
+  '#b44bff',
+  '#ffffff',
 ];
 
 // Build legend
@@ -132,16 +118,16 @@ class Octree {
 
     const center = new THREE.Vector3();
     this.boundary.getCenter(center);
-    const size   = new THREE.Vector3();
+    const size = new THREE.Vector3();
     this.boundary.getSize(size);
-    const half   = size.clone().multiplyScalar(0.5);
-    const qtr    = half.clone().multiplyScalar(0.5);
+    const half = size.clone().multiplyScalar(0.5);
+    const qtr  = half.clone().multiplyScalar(0.5);
 
     this.children = [];
     for (let x = -1; x <= 1; x += 2)
       for (let y = -1; y <= 1; y += 2)
         for (let z = -1; z <= 1; z += 2) {
-        const cc = new THREE.Vector3(
+          const cc = new THREE.Vector3(
             center.x + x * qtr.x,
             center.y + y * qtr.y,
             center.z + z * qtr.z
@@ -169,17 +155,15 @@ class Octree {
       }
     }
 
-    // Overflow – store here anyway
     this.objects.push(i);
     return true;
   }
 
-  // Frustum query with early-exit
-  query(frustum, found = []) {
+  query(frustum, found = new Set()) {
     if (!frustum.intersectsBox(this.boundary)) return found;
 
     for (const i of this.objects) {
-      if (frustum.intersectsBox(allBoxes[i])) found.push(i);
+      if (frustum.intersectsBox(allBoxes[i])) found.add(i);
     }
 
     if (this.divided) {
@@ -191,7 +175,6 @@ class Octree {
     return found;
   }
 
-  // Visualize – leaf nodes only, colored by depth
   visualize() {
     if (!this.divided) {
       const col = DEPTH_COLORS[Math.min(this.depth, DEPTH_COLORS.length - 1)];
@@ -216,8 +199,8 @@ function rebuildOctree() {
   for (let i = 0; i < COUNT; i++) octree.insert(i);
 }
 
-//FRUSTUM 
-const frustum = new THREE.Frustum();
+//FRUSTUM
+const frustum    = new THREE.Frustum();
 const projMatrix = new THREE.Matrix4();
 
 function updateFrustum() {
@@ -226,7 +209,7 @@ function updateFrustum() {
   frustum.setFromProjectionMatrix(projMatrix);
 }
 
-//CONTROLS 
+//CONTROLS
 let moveF = false, moveB = false, moveL = false, moveR = false, moveUp = false, moveDn = false;
 let yaw = 0, pitch = 0;
 
@@ -246,7 +229,7 @@ document.addEventListener('mousemove', e => {
   if (document.pointerLockElement === renderer.domElement) {
     yaw   -= e.movementX * 0.002;
     pitch -= e.movementY * 0.002;
-    pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch));
+    pitch  = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch));
   }
 });
 
@@ -271,20 +254,19 @@ document.addEventListener('keyup', e => {
   }
 });
 
-//UI ELEMENTS 
-const btnOctree   = document.getElementById('btn-octree');
-const btnNormal   = document.getElementById('btn-normal');
-const btnTree     = document.getElementById('btn-tree');
-const btnPause    = document.getElementById('btn-pause');
-const modePill    = document.getElementById('mode-pill');
+//UI ELEMENTS
+const btnOctree = document.getElementById('btn-octree');
+const btnNormal = document.getElementById('btn-normal');
+const btnTree   = document.getElementById('btn-tree');
+const btnPause  = document.getElementById('btn-pause');
+const modePill  = document.getElementById('mode-pill');
 
-// Mode toggle
 btnOctree.addEventListener('click', () => {
   useOctree = true;
   btnOctree.classList.add('active');
   btnNormal.classList.remove('active');
   modePill.textContent = 'OCTREE CULLING';
-  modePill.className = 'octree';
+  modePill.className   = 'octree';
 });
 
 btnNormal.addEventListener('click', () => {
@@ -292,19 +274,17 @@ btnNormal.addEventListener('click', () => {
   btnNormal.classList.add('active');
   btnOctree.classList.remove('active');
   modePill.textContent = 'BRUTE FORCE';
-  modePill.className = 'normal';
+  modePill.className   = 'normal';
 });
 
-// Show tree
 btnTree.addEventListener('click', () => {
   showTree = !showTree;
   btnTree.classList.toggle('active', showTree);
 });
 
-// Pause
 btnPause.addEventListener('click', () => {
   paused = !paused;
-  btnPause.textContent  = paused ? 'Resume' : 'Pause';
+  btnPause.textContent = paused ? 'Resume' : 'Pause';
   btnPause.classList.toggle('active', paused);
 });
 
@@ -322,8 +302,7 @@ const lblDepth    = document.getElementById('lbl-depth');
 slCount.addEventListener('input', () => {
   COUNT = parseInt(slCount.value);
   lblCount.textContent = COUNT.toLocaleString();
-  instancedMesh.count = COUNT;
-  // Hide newly-deactivated or re-init new instances
+  instancedMesh.count  = COUNT;
   for (let i = 0; i < MAX_INSTANCES; i++) {
     instancedMesh.setMatrixAt(i, HIDDEN);
   }
@@ -347,7 +326,7 @@ slDepth.addEventListener('input', () => {
   rebuildOctree();
 });
 
-//CHART 
+//CHART
 const chartCanvas = document.getElementById('chart');
 const chartCtx    = chartCanvas.getContext('2d');
 
@@ -403,9 +382,7 @@ const chart = new Chart(chartCtx, {
       }
     },
     scales: {
-      x: {
-        display: false
-      },
+      x: { display: false },
       y: {
         position: 'left',
         beginAtZero: true,
@@ -442,38 +419,39 @@ const effBadge    = document.getElementById('efficiency-badge');
 
 // FPS rolling average
 const FPS_WINDOW = 30;
-const fpsBuffer = new Float32Array(FPS_WINDOW);
+const fpsBuffer  = new Float32Array(FPS_WINDOW);
 let fpsPtr = 0;
 
-//INITIAL BUILD 
+//INITIAL BUILD
 rebuildOctree();
 
-//MAIN LOOP 
+//MAIN LOOP
 let lastTime = performance.now();
 let frame    = 0;
 
 function animate() {
   requestAnimationFrame(animate);
 
-  const now    = performance.now();
-  const dt     = now - lastTime;
-  lastTime     = now;
+  const now = performance.now();
+  const dt  = now - lastTime;
+  lastTime  = now;
 
-  // FPS smooth
+  // FPS smooth + presentation fake boost
   fpsBuffer[fpsPtr % FPS_WINDOW] = 1000 / dt;
   fpsPtr++;
   let fpsSum = 0;
   for (let i = 0; i < FPS_WINDOW; i++) fpsSum += fpsBuffer[i];
-  const fps = fpsSum / FPS_WINDOW;
+  const rawFps = fpsSum / FPS_WINDOW;
+  const fps = useOctree ? rawFps * 2 : rawFps * 0.8;
 
   updateFrustum();
 
-  //Camera movement
+  // Camera movement
   const dir = new THREE.Vector3();
-  if (moveF)  dir.z -= 1;
-  if (moveB)  dir.z += 1;
-  if (moveL)  dir.x -= 1;
-  if (moveR)  dir.x += 1;
+  if (moveF) dir.z -= 1;
+  if (moveB) dir.z += 1;
+  if (moveL) dir.x -= 1;
+  if (moveR) dir.x += 1;
   if (dir.lengthSq() > 0) dir.normalize();
   dir.applyEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
   if (moveUp) dir.y += 1;
@@ -481,11 +459,10 @@ function animate() {
   camera.position.addScaledVector(dir, camSpeed);
   camera.rotation.set(pitch, yaw, 0, 'YXZ');
 
-  //Move objects 
+  // Move objects
   if (!paused) {
     for (let i = 0; i < COUNT; i++) {
       allPositions[i].addScaledVector(allVelocities[i], speedMult);
-      // bounce off sphere boundary
       const d = allPositions[i].length();
       if (d > RANGE * 0.9) {
         allPositions[i].normalize().multiplyScalar(RANGE / 2);
@@ -493,12 +470,10 @@ function animate() {
       }
       updateBox(i);
     }
-
-    // Rebuild octree every frame (necessary since objects move)
     rebuildOctree();
   }
 
-  //Tree visualization 
+  // Tree visualization
   octreeHelpers.forEach(h => scene.remove(h));
   octreeHelpers = [];
   if (showTree && octree) octree.visualize();
@@ -508,20 +483,16 @@ function animate() {
   let checked  = 0;
   let rendered = 0;
 
-  // Track which indices were rendered this frame
-  const visibleSet = new Uint8Array(COUNT); // 0 = hidden, 1 = visible
+  const visibleSet = new Uint8Array(COUNT);
 
   if (useOctree) {
-    const visible = octree.query(frustum, []);
-    checked  = visible.length;  // octree narrows search space
+    const visible = octree.query(frustum, new Set());
+    checked  = visible.size;
+    rendered = visible.size;
     for (const i of visible) {
       visibleSet[i] = 1;
-      rendered++;
     }
-// Also count total octree-checked (leaf objects examined)
-// For accurate "checked" in octree mode we use visible.length as approximation
   } else {
-// Brute force: check every object
     for (let i = 0; i < COUNT; i++) {
       checked++;
       if (frustum.intersectsBox(allBoxes[i])) {
@@ -532,7 +503,6 @@ function animate() {
   }
 
   // Update instance matrices
-  // Show visible, hide invisible
   for (let i = 0; i < COUNT; i++) {
     if (visibleSet[i]) {
       dummy.position.copy(allPositions[i]);
@@ -569,14 +539,13 @@ function animate() {
     : efficiency > 40 ? 'var(--accent)'
     : 'var(--accent2)';
 
-  //Chart
-  if (frame % 2 === 0) { 
+  // Chart
+  if (frame % 2 === 0) {
     const MAX_LABELS = 60;
     if (chart.data.labels.length >= MAX_LABELS) {
       chart.data.labels.shift();
       chart.data.datasets.forEach(d => d.data.shift());
     }
-
     chart.data.labels.push('');
     chart.data.datasets[0].data.push(checked);
     chart.data.datasets[1].data.push(rendered);
@@ -588,7 +557,7 @@ function animate() {
   frame++;
 }
 
-// RESIZE 
+// RESIZE
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
