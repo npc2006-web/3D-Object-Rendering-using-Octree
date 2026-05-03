@@ -1,27 +1,442 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset="UTF-8" />
   <title>Octree Scene Optimizer</title>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@300;500;700&display=swap" rel="stylesheet" />
   <style>
-    body { margin: 0; overflow: hidden; }
-    canvas#chart {
-      position: absolute;
-      bottom: 10px;
-      left: 10px;
-      width: 400px !important;
-      height: 200px !important;
-      background: white;
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #050a0f;
+      --panel: rgba(5, 18, 30, 0.88);
+      --border: rgba(0, 200, 255, 0.18);
+      --accent: #00c8ff;
+      --accent2: #ff6b35;
+      --accent3: #39ff14;
+      --text: #c8e8f0;
+      --dim: #4a7080;
+      --font-mono: 'Share Tech Mono', monospace;
+      --font-ui: 'Rajdhani', sans-serif;
     }
+
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: var(--bg);
+      font-family: var(--font-ui);
+      color: var(--text);
+    }
+
+    canvas#three-canvas {
+      display: block;
+    }
+
+    /* ── HUD Panel ── */
+    #hud {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      width: 260px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      pointer-events: none;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px 14px;
+      backdrop-filter: blur(8px);
+      pointer-events: all;
+      box-shadow: 0 0 20px rgba(0,200,255,0.05), inset 0 1px 0 rgba(255,255,255,0.05);
+    }
+
+    .panel-title {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.2em;
+      color: var(--accent);
+      text-transform: uppercase;
+      margin-bottom: 10px;
+      opacity: 0.8;
+    }
+
+    /* Stats */
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 5px;
+    }
+
+    .stat-label {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--dim);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .stat-value {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--text);
+      font-weight: bold;
+    }
+
+    .stat-value.fps { color: var(--accent3); }
+    .stat-value.mode-octree { color: var(--accent); }
+    .stat-value.mode-normal { color: var(--accent2); }
+
+    /* Progress bars */
+    .bar-row {
+      margin-bottom: 6px;
+    }
+    .bar-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 3px;
+    }
+    .bar-label { font-family: var(--font-mono); font-size: 10px; color: var(--dim); }
+    .bar-val   { font-family: var(--font-mono); font-size: 10px; color: var(--text); }
+    .bar-bg {
+      width: 100%;
+      height: 4px;
+      background: rgba(255,255,255,0.06);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.1s linear;
+    }
+    .bar-fill.checked { background: var(--accent2); }
+    .bar-fill.rendered { background: var(--accent); }
+
+    /* Efficiency badge */
+    #efficiency-badge {
+      text-align: center;
+      font-family: var(--font-mono);
+      font-size: 22px;
+      padding: 4px 0;
+      letter-spacing: 0.05em;
+    }
+    #efficiency-label {
+      font-size: 9px;
+      color: var(--dim);
+      text-align: center;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+    }
+
+    /* Buttons */
+    .btn-row {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 7px 10px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: rgba(0,200,255,0.07);
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .btn:hover {
+      background: rgba(0,200,255,0.16);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .btn.active {
+      background: rgba(0,200,255,0.22);
+      border-color: var(--accent);
+      color: var(--accent);
+      box-shadow: 0 0 10px rgba(0,200,255,0.3);
+    }
+
+    .btn.warn.active {
+      background: rgba(255,107,53,0.2);
+      border-color: var(--accent2);
+      color: var(--accent2);
+      box-shadow: 0 0 10px rgba(255,107,53,0.3);
+    }
+
+    /* Sliders */
+    .slider-row {
+      margin-bottom: 8px;
+    }
+    .slider-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 4px;
+    }
+    .slider-label { font-family: var(--font-mono); font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.08em; }
+    .slider-val   { font-family: var(--font-mono); font-size: 10px; color: var(--text); }
+
+    input[type=range] {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 3px;
+      border-radius: 2px;
+      background: rgba(255,255,255,0.1);
+      outline: none;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+      box-shadow: 0 0 6px var(--accent);
+    }
+
+    /* Chart panel */
+    #chart-panel {
+      position: absolute;
+      bottom: 16px;
+      left: 16px;
+      width: 320px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px 14px;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 0 20px rgba(0,200,255,0.05);
+    }
+
+    #chart-panel .panel-title { margin-bottom: 8px; }
+
+    canvas#chart {
+      width: 100% !important;
+      height: 110px !important;
+    }
+
+    /* Key hints */
+    #keyhints {
+      position: absolute;
+      bottom: 16px;
+      right: 16px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--dim);
+      text-align: right;
+      line-height: 1.8;
+      pointer-events: none;
+    }
+    #keyhints span { color: var(--text); }
+
+    /* Mode pill */
+    #mode-pill {
+      position: absolute;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.2em;
+      padding: 5px 18px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      backdrop-filter: blur(8px);
+      transition: all 0.2s;
+      pointer-events: none;
+    }
+    #mode-pill.octree { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 14px rgba(0,200,255,0.25); }
+    #mode-pill.normal { border-color: var(--accent2); color: var(--accent2); box-shadow: 0 0 14px rgba(255,107,53,0.25); }
+
+    /* Depth legend */
+    #depth-legend {
+      display: flex;
+      gap: 5px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-top: 6px;
+    }
+    .depth-swatch {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      font-family: var(--font-mono);
+      font-size: 9px;
+      color: var(--dim);
+    }
+    .depth-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 1px;
+    }
+
+    /* Crosshair */
+    #crosshair {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    body.locked #crosshair { opacity: 1; }
+
+    #crosshair::before, #crosshair::after {
+      content: '';
+      position: absolute;
+      background: rgba(255,255,255,0.6);
+    }
+    #crosshair::before {
+      width: 1px; height: 14px;
+      top: -7px; left: 0;
+    }
+    #crosshair::after {
+      width: 14px; height: 1px;
+      left: -7px; top: 0;
+    }
+
+    /* Lock prompt */
+    #lock-prompt {
+      position: absolute;
+      bottom: 50%;
+      left: 50%;
+      transform: translateX(-50%) translateY(50%);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: rgba(200,232,240,0.4);
+      letter-spacing: 0.15em;
+      pointer-events: none;
+      transition: opacity 0.4s;
+    }
+    body.locked #lock-prompt { opacity: 0; }
   </style>
 </head>
 <body>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <div id="hud">
 
-<canvas id="chart"></canvas>
+    <div class="panel">
+      <div class="panel-title">▸ Performance</div>
 
-<script src="script.js"></script>
+      <div class="stat-row">
+        <span class="stat-label">FPS</span>
+        <span class="stat-value fps" id="s-fps">—</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Objects</span>
+        <span class="stat-value" id="s-count">—</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Frame</span>
+        <span class="stat-value" id="s-ms">—</span>
+      </div>
 
+      <div style="margin-top:10px;">
+        <div class="bar-row">
+          <div class="bar-header">
+            <span class="bar-label">Checked</span>
+            <span class="bar-val" id="s-checked">—</span>
+          </div>
+          <div class="bar-bg"><div class="bar-fill checked" id="bar-checked" style="width:0%"></div></div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-header">
+            <span class="bar-label">Rendered</span>
+            <span class="bar-val" id="s-rendered">—</span>
+          </div>
+          <div class="bar-bg"><div class="bar-fill rendered" id="bar-rendered" style="width:0%"></div></div>
+        </div>
+      </div>
+
+      <div style="margin-top:10px; border-top: 1px solid var(--border); padding-top:10px;">
+        <div id="efficiency-badge" style="color:var(--accent3)">—%</div>
+        <div id="efficiency-label">Cull Efficiency</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">▸ Mode</div>
+      <div class="btn-row">
+        <button class="btn active" id="btn-octree">Octree</button>
+        <button class="btn" id="btn-normal">Brute</button>
+      </div>
+      <div class="btn-row" style="margin-top:6px;">
+        <button class="btn warn" id="btn-tree">Show Tree</button>
+        <button class="btn" id="btn-pause">Pause</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">▸ Settings</div>
+
+      <div class="slider-row">
+        <div class="slider-header">
+          <span class="slider-label">Object Count</span>
+          <span class="slider-val" id="lbl-count">50000</span>
+        </div>
+        <input type="range" id="sl-count" min="1000" max="200000" step="1000" value="50000" />
+      </div>
+
+      <div class="slider-row">
+        <div class="slider-header">
+          <span class="slider-label">Speed</span>
+          <span class="slider-val" id="lbl-speed">1.0×</span>
+        </div>
+        <input type="range" id="sl-speed" min="0" max="5" step="0.1" value="1" />
+      </div>
+
+      <div class="slider-row">
+        <div class="slider-header">
+          <span class="slider-label">Cam Speed</span>
+          <span class="slider-val" id="lbl-camspeed">3</span>
+        </div>
+        <input type="range" id="sl-camspeed" min="1" max="20" step="0.5" value="3" />
+      </div>
+
+      <div class="slider-row">
+        <div class="slider-header">
+          <span class="slider-label">Octree Depth</span>
+          <span class="slider-val" id="lbl-depth">5</span>
+        </div>
+        <input type="range" id="sl-depth" min="2" max="8" step="1" value="5" />
+      </div>
+    </div>
+
+  </div>
+
+  <div id="mode-pill" class="octree">OCTREE CULLING</div>
+
+  <div id="chart-panel">
+    <div class="panel-title">▸ Live Graph</div>
+    <canvas id="chart"></canvas>
+    <div id="depth-legend"></div>
+  </div>
+
+  <div id="keyhints">
+    CLICK TO LOCK MOUSE<br>
+    <span>W A S D</span> — MOVE<br>
+    <span>MOUSE</span> — LOOK<br>
+    <span>ESC</span> — UNLOCK
+  </div>
+
+  <div id="crosshair"></div>
+  <div id="lock-prompt">[ CLICK TO CONTROL ]</div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="script.js"></script>
 </body>
 </html>
